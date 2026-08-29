@@ -1,1 +1,79 @@
+name: Portfolio B3 - Reproducao do Estudo
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  reproduce-study:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scipy scikit-learn yfinance requests
+
+      - name: Run historical portfolio study
+        run: python run.py
+
+      - name: Update current B3 prices
+        run: python update_prices.py
+
+      - name: Update operational annual returns
+        run: python update_returns.py
+
+      - name: Repair current B3 prices
+        run: python repair_prices.py
+
+      - name: Update current B3 fundamentals
+        run: python update_fundamentals.py
+
+      - name: Update current B3 sectors
+        run: python update_sectors.py
+
+      - name: Build current B3 portfolio
+        run: python update_portfolio.py
+
+      - name: Audit current B3 portfolio
+        run: python audit_portfolio.py
+
+      - name: Persist operational daily price history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data_live/daily_prices_operational.csv
+
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração no histórico operacional."
+          else
+            git commit -m "Update operational daily price history"
+            git push
+          fi
+
+      - name: Upload historical reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-b3-historical-report
+          path: reports/
+          if-no-files-found: warn
+
+      - name: Upload current operational data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-b3-current-data
+          path: data_live/
+          if-no-files-found: warn
