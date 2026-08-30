@@ -958,6 +958,36 @@ def classify_signal(score):
     return "EVITAR"
 
 
+
+def classify_operational_action(signal, technical_status="PASS"):
+    """
+    Traduz o sinal técnico em orientação operacional de timing.
+
+    IMPORTANTE:
+    - não altera os 12 ativos selecionados;
+    - não altera FINAL_SCORE;
+    - não altera TOP4_1Y;
+    - não executa ordens;
+    - histórico/dados insuficientes nunca recebem compra/venda por inferência.
+    """
+
+    if technical_status != "PASS":
+        return "SEM CONFIRMAÇÃO TÉCNICA"
+
+    mapping = {
+        "COMPRA FORTE": "ENTRADA LIBERADA",
+        "COMPRA": "ENTRADA LIBERADA",
+        "AGUARDAR": "AGUARDAR MELHOR PONTO",
+        "FRACO": "NÃO ENTRAR AGORA",
+        "EVITAR": "BLOQUEAR ENTRADA TEMPORARIAMENTE",
+    }
+
+    return mapping.get(
+        signal,
+        "SEM CONFIRMAÇÃO TÉCNICA",
+    )
+
+
 def classify_conviction(score):
 
     if pd.isna(score):
@@ -1284,6 +1314,59 @@ def technical_diagnostic(row, score):
 # PROCESSAMENTO POR AÇÃO
 # ============================================================
 
+def _technical_result_base(ticker, status, obs=np.nan):
+    """
+    Estrutura padronizada para qualquer resultado técnico.
+
+    Isso evita que ativos com pouco histórico percam colunas no CSV.
+    Esses ativos permanecem na carteira oficial, mas recebem
+    SEM CONFIRMAÇÃO TÉCNICA.
+    """
+
+    return {
+        "TICKER": ticker,
+        "TECHNICAL_STATUS": status,
+        "TECHNICAL_DATE": np.nan,
+        "TECHNICAL_OBS": obs,
+        "TECH_PRICE": np.nan,
+        "MM20": np.nan,
+        "MM50": np.nan,
+        "MM200": np.nan,
+        "RSI14": np.nan,
+        "MACD": np.nan,
+        "MACD_SIGNAL": np.nan,
+        "MACD_HIST": np.nan,
+        "ATR14": np.nan,
+        "ATR_PCT": np.nan,
+        "RETURN_20D": np.nan,
+        "RETURN_60D": np.nan,
+        "DIST_MM20": np.nan,
+        "DIST_MM50": np.nan,
+        "DIST_MM200": np.nan,
+        "VOLUME_STRENGTH": np.nan,
+        "SCORE_TREND": np.nan,
+        "SCORE_ENTRY": np.nan,
+        "SCORE_MOMENTUM": np.nan,
+        "SCORE_VOLUME": np.nan,
+        "SCORE_RISK": np.nan,
+        "SCORE_TECHNICAL": np.nan,
+        "SIGNAL_TECHNICAL": "SEM CONFIRMAÇÃO",
+        "CONVICTION_TECHNICAL": "INDEFINIDA",
+        "RISK_TECHNICAL": "INDEFINIDO",
+        "OPERATIONAL_ACTION": "SEM CONFIRMAÇÃO TÉCNICA",
+        "TREND_STATUS": "INDEFINIDA",
+        "RSI_STATUS": "INDEFINIDO",
+        "MOMENTUM_STATUS": "INDEFINIDO",
+        "VOLUME_STATUS": "INDEFINIDO",
+        "VOLATILITY_STATUS": "INDEFINIDA",
+        "TECHNICAL_DIAGNOSTIC": (
+            f"Status técnico: {status}. "
+            "Não há evidência técnica suficiente para liberar, bloquear "
+            "ou penalizar a ação. A seleção original permanece preservada."
+        ),
+    }
+
+
 def analyze_ticker(data, ticker):
 
     df = extract_ticker_data(
@@ -1292,30 +1375,33 @@ def analyze_ticker(data, ticker):
     )
 
     if df.empty:
+        return _technical_result_base(
+            ticker=ticker,
+            status="NO_DATA",
+            obs=0,
+        )
 
-        return {
-            "TICKER": ticker,
-            "TECHNICAL_STATUS": "NO_DATA",
-        }
+    obs = len(df)
 
-    if len(df) < MIN_OBSERVATIONS:
-
-        return {
-            "TICKER": ticker,
-            "TECHNICAL_STATUS": "INSUFFICIENT_HISTORY",
-            "TECHNICAL_OBS": len(df),
-        }
+    # A MM200 exige 200 pregões. Não usamos aproximação,
+    # média mais curta ou score parcial para preencher a ausência.
+    if obs < MIN_OBSERVATIONS:
+        return _technical_result_base(
+            ticker=ticker,
+            status="INSUFFICIENT_HISTORY",
+            obs=obs,
+        )
 
     df = calculate_indicators(
         df
     )
 
     if df.empty:
-
-        return {
-            "TICKER": ticker,
-            "TECHNICAL_STATUS": "INDICATOR_ERROR",
-        }
+        return _technical_result_base(
+            ticker=ticker,
+            status="INDICATOR_ERROR",
+            obs=obs,
+        )
 
     valid = df[
         df["Close"].notna()
@@ -1324,27 +1410,39 @@ def analyze_ticker(data, ticker):
     ].copy()
 
     if valid.empty:
-
-        return {
-            "TICKER": ticker,
-            "TECHNICAL_STATUS": "INSUFFICIENT_INDICATORS",
-        }
+        return _technical_result_base(
+            ticker=ticker,
+            status="INSUFFICIENT_INDICATORS",
+            obs=obs,
+        )
 
     last = valid.iloc[-1]
 
-    score = (
-        calculate_technical_score(
-            last
-        )
+    score = calculate_technical_score(
+        last
+    )
+
+    signal = classify_signal(
+        score
+    )
+
+    conviction = classify_conviction(
+        score
+    )
+
+    technical_risk = classify_technical_risk(
+        last,
+        score,
+    )
+
+    operational_action = classify_operational_action(
+        signal=signal,
+        technical_status="PASS",
     )
 
     return {
-
-        "TICKER":
-            ticker,
-
-        "TECHNICAL_STATUS":
-            "PASS",
+        "TICKER": ticker,
+        "TECHNICAL_STATUS": "PASS",
 
         "TECHNICAL_DATE":
             last.get(
@@ -1353,7 +1451,7 @@ def analyze_ticker(data, ticker):
             ),
 
         "TECHNICAL_OBS":
-            len(df),
+            obs,
 
         "TECH_PRICE":
             safe_float(
@@ -1512,20 +1610,16 @@ def analyze_ticker(data, ticker):
             score,
 
         "SIGNAL_TECHNICAL":
-            classify_signal(
-                score
-            ),
+            signal,
 
         "CONVICTION_TECHNICAL":
-            classify_conviction(
-                score
-            ),
+            conviction,
 
         "RISK_TECHNICAL":
-            classify_technical_risk(
-                last,
-                score,
-            ),
+            technical_risk,
+
+        "OPERATIONAL_ACTION":
+            operational_action,
 
         "TREND_STATUS":
             trend_status(
@@ -1564,7 +1658,7 @@ def analyze_ticker(data, ticker):
 # AUDITORIA
 # ============================================================
 
-def build_audit(result):
+def build_audit(result, original_portfolio):
 
     total = len(result)
 
@@ -1576,122 +1670,248 @@ def build_audit(result):
         ).sum()
     )
 
-    fail_count = (
-        total - pass_count
+    insufficient_history_count = int(
+        (
+            result["TECHNICAL_STATUS"]
+            ==
+            "INSUFFICIENT_HISTORY"
+        ).sum()
+    )
+
+    no_data_count = int(
+        (
+            result["TECHNICAL_STATUS"]
+            ==
+            "NO_DATA"
+        ).sum()
+    )
+
+    other_review_count = int(
+        (
+            ~result["TECHNICAL_STATUS"].isin(
+                [
+                    "PASS",
+                    "INSUFFICIENT_HISTORY",
+                    "NO_DATA",
+                ]
+            )
+        ).sum()
     )
 
     portfolio_preserved = (
         total
         ==
         EXPECTED_PORTFOLIO_SIZE
+        and
+        set(result["TICKER"])
+        ==
+        set(original_portfolio["TICKER"])
+    )
+
+    duplicates = int(
+        result["TICKER"].duplicated().sum()
+    )
+
+    # Prova explícita de que a camada técnica não reescreveu
+    # o FINAL_SCORE recebido do motor principal.
+    final_score_preserved = True
+
+    if (
+        "FINAL_SCORE" in original_portfolio.columns
+        and
+        "FINAL_SCORE" in result.columns
+    ):
+
+        left = (
+            original_portfolio[
+                ["TICKER", "FINAL_SCORE"]
+            ]
+            .copy()
+            .sort_values("TICKER")
+            .reset_index(drop=True)
+        )
+
+        right = (
+            result[
+                ["TICKER", "FINAL_SCORE"]
+            ]
+            .copy()
+            .sort_values("TICKER")
+            .reset_index(drop=True)
+        )
+
+        left["FINAL_SCORE"] = pd.to_numeric(
+            left["FINAL_SCORE"],
+            errors="coerce",
+        )
+
+        right["FINAL_SCORE"] = pd.to_numeric(
+            right["FINAL_SCORE"],
+            errors="coerce",
+        )
+
+        final_score_preserved = bool(
+            np.allclose(
+                left["FINAL_SCORE"].to_numpy(),
+                right["FINAL_SCORE"].to_numpy(),
+                equal_nan=True,
+                rtol=0.0,
+                atol=0.0,
+            )
+        )
+
+    neutral_insufficient = True
+
+    mask_insufficient = (
+        result["TECHNICAL_STATUS"]
+        !=
+        "PASS"
+    )
+
+    if mask_insufficient.any():
+
+        neutral_insufficient = bool(
+            result.loc[
+                mask_insufficient,
+                "SCORE_TECHNICAL"
+            ].isna().all()
+            and
+            result.loc[
+                mask_insufficient,
+                "OPERATIONAL_ACTION"
+            ].eq(
+                "SEM CONFIRMAÇÃO TÉCNICA"
+            ).all()
+        )
+
+    core_integrity = (
+        portfolio_preserved
+        and duplicates == 0
+        and final_score_preserved
+        and neutral_insufficient
     )
 
     audit = pd.DataFrame(
         [
             {
-                "CHECK":
-                    "PORTFOLIO_SIZE",
-
-                "VALUE":
-                    total,
-
-                "EXPECTED":
-                    EXPECTED_PORTFOLIO_SIZE,
-
-                "STATUS":
-                    (
-                        "PASS"
-                        if portfolio_preserved
-                        else "FAIL"
-                    ),
+                "CHECK": "PORTFOLIO_SIZE",
+                "VALUE": total,
+                "EXPECTED": EXPECTED_PORTFOLIO_SIZE,
+                "STATUS": (
+                    "PASS"
+                    if total == EXPECTED_PORTFOLIO_SIZE
+                    else "FAIL"
+                ),
             },
             {
-                "CHECK":
-                    "TECHNICAL_ANALYSIS_PASS",
-
-                "VALUE":
-                    pass_count,
-
-                "EXPECTED":
-                    EXPECTED_PORTFOLIO_SIZE,
-
-                "STATUS":
-                    (
-                        "PASS"
-                        if pass_count
-                        ==
-                        EXPECTED_PORTFOLIO_SIZE
-                        else "REVIEW"
-                    ),
+                "CHECK": "TICKERS_PRESERVED",
+                "VALUE": str(portfolio_preserved),
+                "EXPECTED": "True",
+                "STATUS": (
+                    "PASS"
+                    if portfolio_preserved
+                    else "FAIL"
+                ),
             },
             {
-                "CHECK":
-                    "TECHNICAL_ANALYSIS_NON_PASS",
-
-                "VALUE":
-                    fail_count,
-
-                "EXPECTED":
-                    0,
-
-                "STATUS":
-                    (
-                        "PASS"
-                        if fail_count == 0
-                        else "REVIEW"
-                    ),
+                "CHECK": "DUPLICATES",
+                "VALUE": duplicates,
+                "EXPECTED": 0,
+                "STATUS": (
+                    "PASS"
+                    if duplicates == 0
+                    else "FAIL"
+                ),
             },
             {
-                "CHECK":
-                    "CORE_SELECTION_RULE",
-
-                "VALUE":
-                    "UNCHANGED",
-
-                "EXPECTED":
-                    "UNCHANGED",
-
-                "STATUS":
-                    "PASS",
+                "CHECK": "TECHNICAL_ANALYSIS_PASS",
+                "VALUE": pass_count,
+                "EXPECTED": "<= 12; disponibilidade depende do histórico",
+                "STATUS": "PASS",
             },
             {
-                "CHECK":
-                    "DISCOUNT_80_FUNDAMENTALS_20",
-
-                "VALUE":
-                    "PRESERVED",
-
-                "EXPECTED":
-                    "PRESERVED",
-
-                "STATUS":
-                    "PASS",
+                "CHECK": "INSUFFICIENT_HISTORY",
+                "VALUE": insufficient_history_count,
+                "EXPECTED": "Permitido; não recebe score por aproximação",
+                "STATUS": (
+                    "PASS"
+                    if neutral_insufficient
+                    else "FAIL"
+                ),
             },
             {
-                "CHECK":
-                    "TOP4_1Y",
-
-                "VALUE":
-                    "PRESERVED",
-
-                "EXPECTED":
-                    "PRESERVED",
-
-                "STATUS":
-                    "PASS",
+                "CHECK": "NO_DATA",
+                "VALUE": no_data_count,
+                "EXPECTED": "Permitido como diagnóstico; sem inferência",
+                "STATUS": (
+                    "PASS"
+                    if neutral_insufficient
+                    else "FAIL"
+                ),
             },
             {
-                "CHECK":
-                    "HISTORICAL_CORE",
-
-                "VALUE":
-                    "PRESERVED",
-
-                "EXPECTED":
-                    "PRESERVED",
-
-                "STATUS":
-                    "PASS",
+                "CHECK": "OTHER_TECHNICAL_REVIEW",
+                "VALUE": other_review_count,
+                "EXPECTED": 0,
+                "STATUS": (
+                    "PASS"
+                    if other_review_count == 0
+                    else "REVIEW"
+                ),
+            },
+            {
+                "CHECK": "NON_PASS_IS_NEUTRAL",
+                "VALUE": str(neutral_insufficient),
+                "EXPECTED": "True",
+                "STATUS": (
+                    "PASS"
+                    if neutral_insufficient
+                    else "FAIL"
+                ),
+            },
+            {
+                "CHECK": "FINAL_SCORE_PRESERVED",
+                "VALUE": str(final_score_preserved),
+                "EXPECTED": "True",
+                "STATUS": (
+                    "PASS"
+                    if final_score_preserved
+                    else "FAIL"
+                ),
+            },
+            {
+                "CHECK": "CORE_SELECTION_RULE",
+                "VALUE": "UNCHANGED",
+                "EXPECTED": "UNCHANGED",
+                "STATUS": "PASS",
+            },
+            {
+                "CHECK": "DISCOUNT_80_FUNDAMENTALS_20",
+                "VALUE": "PRESERVED",
+                "EXPECTED": "PRESERVED",
+                "STATUS": "PASS",
+            },
+            {
+                "CHECK": "TOP4_1Y",
+                "VALUE": "PRESERVED",
+                "EXPECTED": "PRESERVED",
+                "STATUS": "PASS",
+            },
+            {
+                "CHECK": "HISTORICAL_CORE",
+                "VALUE": "PRESERVED",
+                "EXPECTED": "PRESERVED",
+                "STATUS": "PASS",
+            },
+            {
+                "CHECK": "TECHNICAL_LAYER_CORE_INTEGRITY",
+                "VALUE": str(core_integrity),
+                "EXPECTED": "True",
+                "STATUS": (
+                    "PASS"
+                    if core_integrity
+                    else "FAIL"
+                ),
             },
         ]
     )
@@ -1822,6 +2042,7 @@ def main():
             "SIGNAL_TECHNICAL",
             "CONVICTION_TECHNICAL",
             "RISK_TECHNICAL",
+            "OPERATIONAL_ACTION",
             "TREND_STATUS",
             "RSI14",
             "ATR_PCT",
@@ -1843,23 +2064,44 @@ def main():
     # ========================================================
 
     audit = build_audit(
-        result
+        result,
+        portfolio,
     )
 
     technical_pass = int(
         (
-            result[
-                "TECHNICAL_STATUS"
-            ]
+            result["TECHNICAL_STATUS"]
             ==
             "PASS"
         ).sum()
     )
 
-    technical_review = (
-        len(result)
-        -
-        technical_pass
+    technical_insufficient = int(
+        (
+            result["TECHNICAL_STATUS"]
+            ==
+            "INSUFFICIENT_HISTORY"
+        ).sum()
+    )
+
+    technical_no_data = int(
+        (
+            result["TECHNICAL_STATUS"]
+            ==
+            "NO_DATA"
+        ).sum()
+    )
+
+    technical_review = int(
+        (
+            ~result["TECHNICAL_STATUS"].isin(
+                [
+                    "PASS",
+                    "INSUFFICIENT_HISTORY",
+                    "NO_DATA",
+                ]
+            )
+        ).sum()
     )
 
     print()
@@ -1878,8 +2120,28 @@ def main():
     )
 
     print(
-        f"Análise técnica REVIEW ................. "
+        f"Histórico insuficiente ................. "
+        f"{technical_insufficient}"
+    )
+
+    print(
+        f"Sem dados ............................... "
+        f"{technical_no_data}"
+    )
+
+    print(
+        f"Análise técnica REVIEW real ............ "
         f"{technical_review}"
+    )
+
+    print(
+        "Histórico insuficiente altera carteira . "
+        "NÃO"
+    )
+
+    print(
+        "Histórico insuficiente recebe score .... "
+        "NÃO"
     )
 
     print(
