@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy scipy scikit-learn yfinance requests
+          pip install pandas numpy scipy scikit-learn yfinance requests reportlab
 
       - name: Run historical portfolio study
         run: python run.py
@@ -50,6 +50,16 @@ jobs:
 
       - name: Audit current B3 portfolio
         run: python audit_portfolio.py
+
+      - name: Generate detailed PDF report
+        run: python generate_portfolio_report.py
+
+      - name: Send portfolio report by email
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python send_portfolio_email.py
 
       - name: Persist operational daily price history
         run: |
