@@ -19,6 +19,20 @@ TOP_N_PER_SECTOR = 3
 N_SECTORS = 4
 EXPECTED_PORTFOLIO_SIZE = 12
 
+# Arquitetura de alocação congelada — Célula 39
+ALLOCATION_VERSION = "ALLOCATION_V1.0.0"
+SECTOR_WEIGHT_RULE = "RANK_40_30_20_10"
+WITHIN_SECTOR_WEIGHT_RULE = "EQUAL_3"
+
+SECTOR_WEIGHTS = {
+    1: 0.40,
+    2: 0.30,
+    3: 0.20,
+    4: 0.10,
+}
+
+WITHIN_SECTOR_WEIGHT = 1.0 / 3.0
+
 print("=" * 78)
 print("PORTIFOLIO-B3 — SELEÇÃO OPERACIONAL FINAL")
 print("=" * 78)
@@ -197,6 +211,65 @@ portfolio = portfolio.sort_values(
     ["TOP4_RANK", "SECTOR_RANK", "TICKER"]
 ).reset_index(drop=True)
 
+# 4) Alocação congelada — ALLOCATION_V1.0.0
+# A seleção das ações já terminou acima. Esta camada apenas atribui pesos.
+portfolio["SECTOR_WEIGHT"] = portfolio["TOP4_RANK"].map(SECTOR_WEIGHTS)
+portfolio["WITHIN_SECTOR_WEIGHT"] = WITHIN_SECTOR_WEIGHT
+portfolio["PORTFOLIO_WEIGHT"] = (
+    portfolio["SECTOR_WEIGHT"] * portfolio["WITHIN_SECTOR_WEIGHT"]
+)
+
+if portfolio["SECTOR_WEIGHT"].isna().any():
+    raise RuntimeError("Falha ao mapear pesos setoriais para TOP4_RANK.")
+
+sector_weight_check = (
+    portfolio[
+        ["TOP4_RANK", "MACRO_SECTOR", "SECTOR_WEIGHT"]
+    ]
+    .drop_duplicates()
+    .sort_values("TOP4_RANK")
+)
+
+allocation_sector_total = float(sector_weight_check["SECTOR_WEIGHT"].sum())
+allocation_portfolio_total = float(portfolio["PORTFOLIO_WEIGHT"].sum())
+
+within_sector_totals = (
+    portfolio.groupby("MACRO_SECTOR")["WITHIN_SECTOR_WEIGHT"].sum()
+)
+
+allocation_sector_pass = bool(
+    np.isclose(allocation_sector_total, 1.0, atol=1e-12)
+)
+
+allocation_within_pass = bool(
+    np.allclose(within_sector_totals.values, 1.0, atol=1e-12)
+)
+
+allocation_portfolio_pass = bool(
+    np.isclose(allocation_portfolio_total, 1.0, atol=1e-12)
+)
+
+expected_weight_by_rank = {
+    1: 0.40 / 3.0,
+    2: 0.30 / 3.0,
+    3: 0.20 / 3.0,
+    4: 0.10 / 3.0,
+}
+
+allocation_exact_pass = bool(
+    all(
+        np.allclose(
+            portfolio.loc[
+                portfolio["TOP4_RANK"].eq(rank),
+                "PORTFOLIO_WEIGHT"
+            ].values,
+            expected_weight,
+            atol=1e-12
+        )
+        for rank, expected_weight in expected_weight_by_rank.items()
+    )
+)
+
 sector_counts = portfolio.groupby("MACRO_SECTOR")["TICKER"].nunique().to_dict()
 duplicates = int(portfolio["TICKER"].duplicated().sum())
 n_portfolio = int(portfolio["TICKER"].nunique())
@@ -210,6 +283,10 @@ audit_pass = (
     and duplicates == 0
     and n_portfolio == EXPECTED_PORTFOLIO_SIZE
     and quality_fail_selected == 0
+    and allocation_sector_pass
+    and allocation_within_pass
+    and allocation_portfolio_pass
+    and allocation_exact_pass
 )
 
 print("\n" + "=" * 78)
@@ -220,12 +297,16 @@ view = portfolio[
     [
         "TOP4_RANK", "MACRO_SECTOR", "SECTOR_RANK", "TICKER",
         "DISCOUNT_52W", "DISCOUNT_SCORE", "FUND_SCORE", "FINAL_SCORE",
+        "SECTOR_WEIGHT", "WITHIN_SECTOR_WEIGHT", "PORTFOLIO_WEIGHT",
         "PRICE_QUALITY_STATUS"
     ]
 ].copy()
 
 for c in ["DISCOUNT_52W", "DISCOUNT_SCORE", "FUND_SCORE", "FINAL_SCORE"]:
     view[c] = view[c].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
+
+for c in ["SECTOR_WEIGHT", "WITHIN_SECTOR_WEIGHT", "PORTFOLIO_WEIGHT"]:
+    view[c] = view[c].map(lambda x: f"{x:.4%}" if pd.notna(x) else "")
 
 print(view.to_string(index=False))
 
@@ -257,6 +338,11 @@ print("Peso fundamentos .................. 20%")
 print("Fund Score mínimo ................. 3 componentes")
 print("Proteção evento corporativo ....... ATIVA")
 print("Histórico congelado ............... PRESERVADO")
+print(f"Allocation version ................ {ALLOCATION_VERSION}")
+print("Peso setorial ..................... 40% / 30% / 20% / 10%")
+print("Peso interno por setor ............ 33,3333% / 33,3333% / 33,3333%")
+print(f"Peso total da carteira ............ {allocation_portfolio_total:.4%}")
+print(f"Auditoria da alocação ............. {'PASS' if (allocation_sector_pass and allocation_within_pass and allocation_portfolio_pass and allocation_exact_pass) else 'FAIL'}")
 print(f"STATUS ............................ {'PASS' if audit_pass else 'FAIL'}")
 
 score_cols_out = [
@@ -276,7 +362,8 @@ portfolio_cols = [
     "TOP4_RANK", "MACRO_SECTOR", "SECTOR_RANK", "TICKER",
     "PRICE_QUALITY_STATUS",
     "DISCOUNT_52W", "DISCOUNT_SCORE",
-    "FUND_COMPONENTS_VALID", "FUND_SCORE", "FINAL_SCORE"
+    "FUND_COMPONENTS_VALID", "FUND_SCORE", "FINAL_SCORE",
+    "SECTOR_WEIGHT", "WITHIN_SECTOR_WEIGHT", "PORTFOLIO_WEIGHT"
 ]
 
 portfolio[portfolio_cols].to_csv(OUT_PORTFOLIO, index=False)
@@ -289,6 +376,13 @@ audit = pd.DataFrame([
     {"CHECK": "PRICE_QUALITY", "VALUE": quality_fail_selected, "EXPECTED": 0, "STATUS": "PASS" if quality_fail_selected == 0 else "FAIL"},
     {"CHECK": "RULE", "VALUE": "DISCOUNT_80_FUNDAMENTALS_20", "EXPECTED": "DISCOUNT_80_FUNDAMENTALS_20", "STATUS": "PASS"},
     {"CHECK": "HISTORICAL_CORE", "VALUE": "PRESERVED", "EXPECTED": "PRESERVED", "STATUS": "PASS"},
+    {"CHECK": "ALLOCATION_VERSION", "VALUE": ALLOCATION_VERSION, "EXPECTED": "ALLOCATION_V1.0.0", "STATUS": "PASS"},
+    {"CHECK": "SECTOR_WEIGHT_RULE", "VALUE": SECTOR_WEIGHT_RULE, "EXPECTED": "RANK_40_30_20_10", "STATUS": "PASS"},
+    {"CHECK": "WITHIN_SECTOR_WEIGHT_RULE", "VALUE": WITHIN_SECTOR_WEIGHT_RULE, "EXPECTED": "EQUAL_3", "STATUS": "PASS"},
+    {"CHECK": "SECTOR_WEIGHT_TOTAL", "VALUE": allocation_sector_total, "EXPECTED": 1.0, "STATUS": "PASS" if allocation_sector_pass else "FAIL"},
+    {"CHECK": "WITHIN_SECTOR_WEIGHT_TOTAL", "VALUE": str(within_sector_totals.to_dict()), "EXPECTED": "1.0 por setor", "STATUS": "PASS" if allocation_within_pass else "FAIL"},
+    {"CHECK": "PORTFOLIO_WEIGHT_TOTAL", "VALUE": allocation_portfolio_total, "EXPECTED": 1.0, "STATUS": "PASS" if allocation_portfolio_pass else "FAIL"},
+    {"CHECK": "EXACT_WEIGHT_BY_TOP4_RANK", "VALUE": str(expected_weight_by_rank), "EXPECTED": "13.3333% / 10.0000% / 6.6667% / 3.3333%", "STATUS": "PASS" if allocation_exact_pass else "FAIL"},
 ])
 audit.to_csv(OUT_AUDIT, index=False)
 
@@ -303,8 +397,12 @@ if not audit_pass:
     raise RuntimeError(
         f"AUDITORIA FINAL = FAIL | portfolio={n_portfolio}, "
         f"duplicidades={duplicates}, qualidade_preco={quality_fail_selected}, "
-        f"contagem_setores={sector_counts}"
+        f"contagem_setores={sector_counts}, "
+        f"allocation_sector={allocation_sector_pass}, "
+        f"allocation_within={allocation_within_pass}, "
+        f"allocation_total={allocation_portfolio_pass}, "
+        f"allocation_exact={allocation_exact_pass}"
     )
 
-print("\nSTATUS: PORTFÓLIO OPERACIONAL 4x3 VALIDADO")
+print(f"\nSTATUS: PORTFÓLIO OPERACIONAL 4x3 + {ALLOCATION_VERSION} VALIDADO")
 print("=" * 78)
