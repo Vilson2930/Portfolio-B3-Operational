@@ -11,48 +11,182 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ======================================================
+      # REPOSITÓRIO
+      # ======================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # ======================================================
+      # DEPENDÊNCIAS
+      # ======================================================
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy scipy scikit-learn yfinance requests reportlab
 
+      # ======================================================
+      # PREPARAR DIRETÓRIOS
+      # ======================================================
+
+      - name: Prepare Investment CIO output directory
+        run: |
+          mkdir -p outputs
+
+      # ======================================================
+      # VALIDAR EXPORTADOR DO INVESTMENT CIO
+      # ======================================================
+
+      - name: Validate Investment CIO exporter
+        run: |
+          python -m py_compile agent_export.py
+          echo "agent_export.py validado com sucesso."
+
+      # ======================================================
+      # ESTUDO HISTÓRICO
+      # ======================================================
+
       - name: Run historical portfolio study
         run: python run.py
+
+      # ======================================================
+      # PREÇOS
+      # ======================================================
 
       - name: Update current B3 prices
         run: python update_prices.py
 
+      # ======================================================
+      # RETORNOS
+      # ======================================================
+
       - name: Update operational annual returns
         run: python update_returns.py
+
+      # ======================================================
+      # REPARO DE PREÇOS
+      # ======================================================
 
       - name: Repair current B3 prices
         run: python repair_prices.py
 
+      # ======================================================
+      # FUNDAMENTOS
+      # ======================================================
+
       - name: Update current B3 fundamentals
         run: python update_fundamentals.py
+
+      # ======================================================
+      # SETORES
+      # ======================================================
 
       - name: Update current B3 sectors
         run: python update_sectors.py
 
+      # ======================================================
+      # PORTFÓLIO OPERACIONAL
+      # ======================================================
+
       - name: Build current B3 portfolio
         run: python update_portfolio.py
+
+      # ======================================================
+      # CAMADA TÉCNICA
+      # ======================================================
 
       - name: Run technical layer
         run: python technical_layer.py
 
+      # ======================================================
+      # AUDITORIA
+      # ======================================================
+
       - name: Audit current B3 portfolio
         run: python audit_portfolio.py
 
+      # ======================================================
+      # EXPORTAÇÃO PARA INVESTMENT CIO AGENT
+      # ======================================================
+
+      - name: Export Portfolio B3 output for Investment CIO Agent
+        run: |
+          python - <<'PY'
+          from agent_export import export_agent_output
+
+          output_file = export_agent_output()
+
+          print("=" * 70)
+          print("PORTFOLIO-B3-OPERATIONAL")
+          print("EXPORTACAO PARA INVESTMENT CIO AGENT")
+          print("=" * 70)
+          print(f"Arquivo criado: {output_file}")
+          print("=" * 70)
+          PY
+
+      # ======================================================
+      # VALIDAR JSON GERADO
+      # ======================================================
+
+      - name: Validate Portfolio B3 agent output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("outputs/agent_output_raw.json")
+
+          if not path.exists():
+              raise FileNotFoundError(
+                  "outputs/agent_output_raw.json não foi criado."
+              )
+
+          with open(path, "r", encoding="utf-8") as file:
+              data = json.load(file)
+
+          if not isinstance(data, dict):
+              raise RuntimeError(
+                  "agent_output_raw.json não contém um objeto JSON válido."
+              )
+
+          source_system = data.get("source_system")
+
+          if source_system != "PORTFOLIO_B3_OPERATIONAL":
+              raise RuntimeError(
+                  f"source_system inesperado: {source_system}"
+              )
+
+          print("=" * 70)
+          print("PORTFOLIO B3 AGENT OUTPUT")
+          print("JSON VALIDADO COM SUCESSO")
+          print("=" * 70)
+          print(f"source_system: {source_system}")
+          print(f"generated_at: {data.get('generated_at')}")
+          print(f"export_version: {data.get('export_version')}")
+          print("=" * 70)
+          PY
+
+      # ======================================================
+      # RELATÓRIO PDF
+      # ======================================================
+
       - name: Generate detailed PDF report
         run: python generate_portfolio_report.py
+
+      # ======================================================
+      # EMAIL
+      # ======================================================
 
       - name: Send portfolio report by email
         env:
@@ -60,6 +194,10 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python send_portfolio_email.py
+
+      # ======================================================
+      # PERSISTÊNCIA DO HISTÓRICO
+      # ======================================================
 
       - name: Persist operational daily price history
         run: |
@@ -75,6 +213,10 @@ jobs:
             git push
           fi
 
+      # ======================================================
+      # ARTIFACT — RELATÓRIOS HISTÓRICOS
+      # ======================================================
+
       - name: Upload historical reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,6 +225,10 @@ jobs:
           path: reports/
           if-no-files-found: warn
 
+      # ======================================================
+      # ARTIFACT — DADOS OPERACIONAIS
+      # ======================================================
+
       - name: Upload current operational data
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,3 +236,15 @@ jobs:
           name: portfolio-b3-current-data
           path: data_live/
           if-no-files-found: warn
+
+      # ======================================================
+      # ARTIFACT — INVESTMENT CIO AGENT
+      # ======================================================
+
+      - name: Upload Portfolio B3 agent output
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-b3-agent-output
+          path: outputs/agent_output_raw.json
+          if-no-files-found: error
+          retention-days: 30
